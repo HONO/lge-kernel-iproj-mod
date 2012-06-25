@@ -113,6 +113,9 @@
 #include "rpm_stats.h"
 #include "../../../arch/arm/mach-msm/peripheral-loader.h"
 #define MSM_SHARED_RAM_PHYS 0x40000000
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+int set_two_phase_freq(int cpufreq);
+#endif
 
 #ifdef CONFIG_LGE_FUEL_GAUGE
 #include <linux/max17040_battery.h>
@@ -413,8 +416,8 @@ static struct regulator_consumer_supply saw_s1_supply =
 static struct regulator_init_data saw_s0_init_data = {
 		.constraints = {
 			.valid_ops_mask = REGULATOR_CHANGE_VOLTAGE,
-			.min_uV = 840000,
-			.max_uV = 1250000,
+			.min_uV = 700000,
+			.max_uV = 1450000,
 		},
 		.num_consumer_supplies = 1,
 		.consumer_supplies = &saw_s0_supply,
@@ -423,8 +426,8 @@ static struct regulator_init_data saw_s0_init_data = {
 static struct regulator_init_data saw_s1_init_data = {
 		.constraints = {
 			.valid_ops_mask = REGULATOR_CHANGE_VOLTAGE,
-			.min_uV = 840000,
-			.max_uV = 1250000,
+			.min_uV = 700000,
+			.max_uV = 1450000,
 		},
 		.num_consumer_supplies = 1,
 		.consumer_supplies = &saw_s1_supply,
@@ -3637,9 +3640,9 @@ static struct rpm_vreg_pdata rpm_vreg_init_pdata[RPM_VREG_ID_MAX] = {
 	RPM_VREG_INIT_LDO(PM8058_L24, 0, 1, 0, 0, 0, LDO150HMIN, 0), /* NC */
 	RPM_VREG_INIT_LDO(PM8058_L25, 0, 1, 0, 0, 0, LDO150HMIN, 0), /* NC */
 
-	RPM_VREG_INIT_SMPS(PM8058_S0, 0, 1, 1,  500000, 1250000,  SMPS_HMIN, 0,
+	RPM_VREG_INIT_SMPS(PM8058_S0, 0, 1, 1,  700000, 1450000,  SMPS_HMIN, 0,
 			RPM_VREG_FREQ_1p60), /* +1V1_MSM_MX */ /* 1100000 not working */
-	RPM_VREG_INIT_SMPS(PM8058_S1, 0, 1, 1,  500000, 1250000,  SMPS_HMIN, 0,
+	RPM_VREG_INIT_SMPS(PM8058_S1, 0, 1, 1,  700000, 1450000,  SMPS_HMIN, 0,
 			RPM_VREG_FREQ_1p60), /* +1V1_MSM_CX */ /* 1100000 not working */
 	RPM_VREG_INIT_SMPS(PM8058_S2, 0, 1, 0, 1200000, 1400000,  SMPS_HMIN,
 			RPM_VREG_PIN_CTRL_A0, RPM_VREG_FREQ_1p60), /* +1V3_MSM_A3 */ /* 1300000 not working */
@@ -3684,9 +3687,9 @@ static struct rpm_vreg_pdata rpm_vreg_init_pdata[RPM_VREG_ID_MAX] = {
 	RPM_VREG_INIT_LDO(PM8058_L24, 0, 1, 0, 1200000, 1200000, LDO150HMIN, 0),
 	RPM_VREG_INIT_LDO(PM8058_L25, 0, 1, 0, 1200000, 1200000, LDO150HMIN, 0),
 
-	RPM_VREG_INIT_SMPS(PM8058_S0, 0, 1, 1,  500000, 1250000,  SMPS_HMIN, 0,
+	RPM_VREG_INIT_SMPS(PM8058_S0, 0, 1, 1,  500000, 1450000,  SMPS_HMIN, 0,
 		RPM_VREG_FREQ_1p60),
-	RPM_VREG_INIT_SMPS(PM8058_S1, 0, 1, 1,  500000, 1250000,  SMPS_HMIN, 0,
+	RPM_VREG_INIT_SMPS(PM8058_S1, 0, 1, 1,  500000, 1450000,  SMPS_HMIN, 0,
 		RPM_VREG_FREQ_1p60),
 	RPM_VREG_INIT_SMPS(PM8058_S2, 0, 1, 1, 1200000, 1400000,  SMPS_HMIN,
 		RPM_VREG_PIN_CTRL_A0, RPM_VREG_FREQ_1p60),
@@ -9015,6 +9018,9 @@ static void __init msm8x60_board_init(struct msm_board_data *board_data)
 	msm_camera_init();
 #endif
 
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+	set_two_phase_freq(1134000);
+#endif
 #ifdef CONFIG_MSM_DSPS
 		if (machine_is_msm8x60_fluid()) {
 			platform_device_unregister(&msm_gsbi12_qup_i2c_device);
