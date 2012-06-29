@@ -63,7 +63,7 @@ static struct mutex set_speed_lock;
 static u64 hispeed_freq;
 
 /* Go to hi speed when CPU load at or above this value. */
-#define DEFAULT_GO_HISPEED_LOAD 85
+#define DEFAULT_GO_HISPEED_LOAD 95
 static unsigned long go_hispeed_load;
 
 /* Base of exponential raise to max speed; if 0 - jump to maximum */
@@ -78,13 +78,13 @@ static unsigned long sustain_load;
 /*
  * The minimum amount of time to spend at a frequency before we can ramp down.
  */
-#define DEFAULT_MIN_SAMPLE_TIME 80000;
+#define DEFAULT_MIN_SAMPLE_TIME 20000;
 static unsigned long min_sample_time;
 
 /*
  * The sample rate of the timer used to increase frequency
  */
-#define DEFAULT_TIMER_RATE 30000;
+#define DEFAULT_TIMER_RATE 20000;
 static unsigned long timer_rate;
 
 static int cpufreq_governor_interactive(struct cpufreq_policy *policy,

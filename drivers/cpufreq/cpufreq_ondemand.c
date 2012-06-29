@@ -107,6 +107,10 @@ static unsigned int dbs_enable;	/* number of CPUs using this policy */
  */
 static DEFINE_MUTEX(dbs_mutex);
 
+static struct workqueue_struct *input_wq;
+
+static DEFINE_PER_CPU(struct work_struct, dbs_refresh_work);
+
 static struct dbs_tuners {
 	unsigned int sampling_rate;
 	unsigned int up_threshold;
@@ -115,12 +119,18 @@ static struct dbs_tuners {
 	unsigned int sampling_down_factor;
 	unsigned int powersave_bias;
 	unsigned int io_is_busy;
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+	unsigned int two_phase_freq;
+#endif
 } dbs_tuners_ins = {
 	.up_threshold = DEF_FREQUENCY_UP_THRESHOLD,
 	.sampling_down_factor = DEF_SAMPLING_DOWN_FACTOR,
 	.down_differential = DEF_FREQUENCY_DOWN_DIFFERENTIAL,
 	.ignore_nice = 0,
 	.powersave_bias = 0,
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+	.two_phase_freq = 0,
+#endif
 };
 
 static inline cputime64_t get_cpu_idle_time_jiffy(unsigned int cpu,
@@ -260,6 +270,9 @@ show_one(down_differential, down_differential);
 show_one(sampling_down_factor, sampling_down_factor);
 show_one(ignore_nice_load, ignore_nice);
 show_one(powersave_bias, powersave_bias);
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+show_one(two_phase_freq, two_phase_freq);
+#endif
 
 static ssize_t store_sampling_rate(struct kobject *a, struct attribute *b,
 				   const char *buf, size_t count)
@@ -272,6 +285,22 @@ static ssize_t store_sampling_rate(struct kobject *a, struct attribute *b,
 	dbs_tuners_ins.sampling_rate = max(input, min_sampling_rate);
 	return count;
 }
+
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+static ssize_t store_two_phase_freq(struct kobject *a, struct attribute *b,
+				   const char *buf, size_t count)
+{
+	unsigned int input;
+	int ret;
+	ret = sscanf(buf, "%u", &input);
+	if (ret != 1)
+		return -EINVAL;
+
+	dbs_tuners_ins.two_phase_freq = input;
+
+	return count;
+}
+#endif
 
 static ssize_t store_io_is_busy(struct kobject *a, struct attribute *b,
 				   const char *buf, size_t count)
@@ -308,15 +337,12 @@ static ssize_t store_down_differential(struct kobject *a, struct attribute *b,
 	int ret;
 	ret = sscanf(buf, "%u", &input);
 
-	mutex_lock(&dbs_mutex);
 	if (ret != 1 || input >= dbs_tuners_ins.up_threshold ||
 			input < MIN_FREQUENCY_DOWN_DIFFERENTIAL) {
-		mutex_unlock(&dbs_mutex);
 		return -EINVAL;
 	}
 
 	dbs_tuners_ins.down_differential = input;
-	mutex_unlock(&dbs_mutex);
 
 	return count;
 }
@@ -399,6 +425,9 @@ define_one_global_rw(down_differential);
 define_one_global_rw(sampling_down_factor);
 define_one_global_rw(ignore_nice_load);
 define_one_global_rw(powersave_bias);
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+define_one_global_rw(two_phase_freq);
+#endif
 
 static struct attribute *dbs_attributes[] = {
 	&sampling_rate_min.attr,
@@ -409,6 +438,9 @@ static struct attribute *dbs_attributes[] = {
 	&ignore_nice_load.attr,
 	&powersave_bias.attr,
 	&io_is_busy.attr,
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+	&two_phase_freq.attr,
+#endif
 	NULL
 };
 
@@ -430,12 +462,24 @@ static void dbs_freq_increase(struct cpufreq_policy *p, unsigned int freq)
 			CPUFREQ_RELATION_L : CPUFREQ_RELATION_H);
 }
 
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+int set_two_phase_freq(int cpufreq)
+{
+	dbs_tuners_ins.two_phase_freq = cpufreq;
+	return 0;
+}
+#endif
+
 static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 {
 	unsigned int max_load_freq;
 
 	struct cpufreq_policy *policy;
 	unsigned int j;
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+	static unsigned int phase = 0;
+	static unsigned int counter = 0;
+#endif
 
 	this_dbs_info->freq_lo = 0;
 	policy = this_dbs_info->cur_policy;
@@ -523,12 +567,43 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 	/* Check for frequency increase */
 	if (max_load_freq > dbs_tuners_ins.up_threshold * policy->cur) {
 		/* If switching to max speed, apply sampling_down_factor */
+#ifndef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
 		if (policy->cur < policy->max)
 			this_dbs_info->rate_mult =
 				dbs_tuners_ins.sampling_down_factor;
 		dbs_freq_increase(policy, policy->max);
+#else
+		if (counter < 5) {
+			counter++;
+			if (counter > 2) {
+				/* change to busy phase */
+				phase = 1;
+			}
+		}
+		if (dbs_tuners_ins.two_phase_freq != 0 && phase == 0) {
+			/* idle phase */
+			dbs_freq_increase(policy,
+				(((dbs_tuners_ins.two_phase_freq)> (int)(policy->max*80/100))
+					?(dbs_tuners_ins.two_phase_freq) : (int)(policy->max*80/100))  );
+		} else {
+			/* busy phase */
+			if (policy->cur < policy->max)
+				this_dbs_info->rate_mult =
+					dbs_tuners_ins.sampling_down_factor;
+			dbs_freq_increase(policy, policy->max);
+		}
+#endif
 		return;
 	}
+#ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
+	if (counter > 0) {
+		counter--;
+		if (counter == 0) {
+			/* change to idle phase */
+			phase = 0;
+		}
+	}
+#endif
 
 	/* Check for frequency decrease */
 	/* if we cannot reduce the frequency anymore, break out early */
@@ -650,46 +725,41 @@ static void dbs_refresh_callback(struct work_struct *unused)
 {
 	struct cpufreq_policy *policy;
 	struct cpu_dbs_info_s *this_dbs_info;
+	unsigned int cpu = smp_processor_id();
 
-	if (lock_policy_rwsem_write(0) < 0)
+	if (lock_policy_rwsem_write(cpu) < 0)
 		return;
 
-	this_dbs_info = &per_cpu(od_cpu_dbs_info, 0);
+	this_dbs_info = &per_cpu(od_cpu_dbs_info, cpu);
 	policy = this_dbs_info->cur_policy;
+	if (!policy) {
+		/* CPU not using ondemand governor */
+		unlock_policy_rwsem_write(cpu);
+		return;
+	}
 
 	if (policy->cur < policy->max) {
 		policy->cur = policy->max;
 
 		__cpufreq_driver_target(policy, policy->max,
 					CPUFREQ_RELATION_L);
-		this_dbs_info->prev_cpu_idle = get_cpu_idle_time(0,
+		this_dbs_info->prev_cpu_idle = get_cpu_idle_time(cpu,
 				&this_dbs_info->prev_cpu_wall);
 	}
-	unlock_policy_rwsem_write(0);
+	unlock_policy_rwsem_write(cpu);
 }
 
-static DECLARE_WORK(dbs_refresh_work, dbs_refresh_callback);
-
+static unsigned int enable_dbs_input_event;
 static void dbs_input_event(struct input_handle *handle, unsigned int type,
 		unsigned int code, int value)
 {
-#ifdef CONFIG_LGE_PM_CURRENT_CONSUMPTION_FIX
-#ifdef CONFIG_LGE_SENSOR_FUSION
-	if(!strcmp((char*)(handle->dev->name), "accelerometer") || !strcmp((char*)(handle->dev->name), "proximity") || !strcmp((char*)(handle->dev->name), "magnetic_field") || !strcmp((char*)(handle->dev->name), "synaptics_ts"))
-#else
-	if(!strcmp((char*)(handle->dev->name), "gesture_flip") || !strcmp((char*)(handle->dev->name), "gesture_tap") || !strcmp((char*)(handle->dev->name), "accelerometer") || !strcmp((char*)(handle->dev->name), "proximity") || !strcmp((char*)(handle->dev->name), "magnetic_field"))
-#endif
-    {
-        //printk(KERN_INFO "Not Bumping up CPU for %s", handle->dev->name);
-        return; 
-    }
-    else
-    {      
-        schedule_work(&dbs_refresh_work);
-    }
-#else    
-	schedule_work_on(0, &dbs_refresh_work);
-#endif
+	int i;
+
+	if (enable_dbs_input_event) {
+		for_each_online_cpu(i) {
+			queue_work_on(i, input_wq, &per_cpu(dbs_refresh_work, i));
+		}
+	}
 }
 
 static int dbs_input_connect(struct input_handler *handler,
@@ -842,6 +912,7 @@ static int __init cpufreq_gov_dbs_init(void)
 {
 	cputime64_t wall;
 	u64 idle_time;
+	unsigned int i;
 	int cpu = get_cpu();
 
 	idle_time = get_cpu_idle_time_us(cpu, &wall);
@@ -863,14 +934,36 @@ static int __init cpufreq_gov_dbs_init(void)
 			MIN_SAMPLING_RATE_RATIO * jiffies_to_usecs(10);
 	}
 
+	input_wq = create_workqueue("iewq");
+	if (!input_wq) {
+		printk(KERN_ERR "Failed to create iewq workqueue\n");
+		return -EFAULT;
+	}
+	for_each_possible_cpu(i) {
+		INIT_WORK(&per_cpu(dbs_refresh_work, i), dbs_refresh_callback);
+	}
+
 	return cpufreq_register_governor(&cpufreq_gov_ondemand);
 }
 
 static void __exit cpufreq_gov_dbs_exit(void)
 {
 	cpufreq_unregister_governor(&cpufreq_gov_ondemand);
+	destroy_workqueue(input_wq);
 }
 
+static int set_enable_dbs_input_event_param(const char *val, struct kernel_param *kp)
+{
+	int ret = 0;
+
+	ret = param_set_uint(val, kp);
+	if (ret)
+		pr_err("%s: error setting value %d\n", __func__, ret);
+
+	return ret;
+}
+module_param_call(enable_dbs_input_event, set_enable_dbs_input_event_param, param_get_uint,
+		&enable_dbs_input_event, S_IWUSR | S_IRUGO);
 
 MODULE_AUTHOR("Venkatesh Pallipadi <venkatesh.pallipadi@intel.com>");
 MODULE_AUTHOR("Alexey Starikovskiy <alexey.y.starikovskiy@intel.com>");
